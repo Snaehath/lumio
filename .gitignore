@@ -1,0 +1,27 @@
+# Flutter and Dart output
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+coverage/
+*.symbols
+*.map.json
+
+# IDE and local SDK settings
+.idea/
+*.iml
+.vscode/
+android/local.properties
+android/.gradle/
+android/key.properties
+
+# Android build output and generated plugin registration
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+
+# OS files
+.DS_Store
+Thumbs.db
