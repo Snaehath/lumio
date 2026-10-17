@@ -98,12 +98,16 @@ class _StudioPageState extends State<StudioPage> {
   bool _editingServer = false;
   String? _error;
   String _statusMessage = 'Starting the generator…';
+  bool? _serverOnline;
+  bool _checkingServer = false;
+  List<Map<String, dynamic>> _history = [];
 
   @override
   void initState() {
     super.initState();
     _serverController.text = _api;
     _loadSavedServer();
+    _loadHistory();
   }
 
   Future<void> _loadSavedServer() async {
@@ -115,6 +119,61 @@ class _StudioPageState extends State<StudioPage> {
         _serverController.text = saved;
       });
     }
+    if (mounted) await _checkServerConnection();
+  }
+
+  Future<void> _checkServerConnection() async {
+    if (_checkingServer) return;
+    setState(() => _checkingServer = true);
+    var online = false;
+    try {
+      final response = await http.get(Uri.parse('$_api/api/health')).timeout(const Duration(seconds: 5));
+      online = response.statusCode == 200 && (jsonDecode(response.body) as Map<String, dynamic>)['status'] == 'ok';
+    } catch (_) {
+      online = false;
+    }
+    if (mounted) setState(() { _serverOnline = online; _checkingServer = false; });
+  }
+
+  Future<void> _loadHistory() async {
+    final preferences = await SharedPreferences.getInstance();
+    final saved = preferences.getStringList('generation_history') ?? [];
+    final entries = <Map<String, dynamic>>[];
+    for (final value in saved) {
+      try {
+        final item = jsonDecode(value) as Map<String, dynamic>;
+        final path = item['image_path'];
+        if (path is String && await File(path).exists()) entries.add(item);
+      } catch (_) {
+        // Ignore incomplete history entries.
+      }
+    }
+    if (mounted) setState(() => _history = entries);
+  }
+
+  Future<Map<String, dynamic>> _rememberGeneration(Map<String, dynamic> job) async {
+    final entry = <String, dynamic>{...job, 'prompt': _prompt.text.trim(), 'aspect_ratio': _ratio, 'steps': _steps};
+    try {
+      final response = await http.get(Uri.parse('$_api${job['image_url']}'));
+      if (response.statusCode != 200) return entry;
+      final documents = await getApplicationDocumentsDirectory();
+      final folder = Directory('${documents.path}${Platform.pathSeparator}lumio_history');
+      await folder.create(recursive: true);
+      final file = File('${folder.path}${Platform.pathSeparator}${job['id']}.png');
+      await file.writeAsBytes(response.bodyBytes, flush: true);
+      entry['image_path'] = file.path;
+      final updated = [entry, ..._history.where((item) => item['id'] != job['id'])];
+      for (final old in updated.skip(12)) {
+        final path = old['image_path'];
+        if (path is String) await File(path).delete().catchError((_) => File(path));
+      }
+      _history = updated.take(12).toList();
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setStringList('generation_history', _history.map(jsonEncode).toList());
+    } catch (_) {
+      if (mounted) _snack('Image created, but it could not be added to history.');
+    }
+    return entry;
   }
 
   @override
@@ -164,7 +223,10 @@ class _StudioPageState extends State<StudioPage> {
         job = jsonDecode(status.body) as Map<String, dynamic>;
       }
       if (job['status'] == 'failed') throw Exception(job['error'] ?? 'Generation failed');
-      if (mounted) setState(() => _job = job);
+      if (mounted) {
+        job = await _rememberGeneration(job);
+        setState(() => _job = job);
+      }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -231,6 +293,7 @@ class _StudioPageState extends State<StudioPage> {
     });
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString('api_base_url', value);
+    await _checkServerConnection();
   }
 
   @override
@@ -256,7 +319,20 @@ class _StudioPageState extends State<StudioPage> {
                   const SizedBox(width: 11),
                   const Text('lumio', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: -1)),
                   const Spacer(),
-                  IconButton.filledTonal(
+                  InkWell(
+                    onTap: _checkServerConnection,
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.circle, size: 8, color: _serverOnline == true ? const Color(0xFF4A8D67) : _serverOnline == false ? accent : Colors.amber),
+                        const SizedBox(width: 6),
+                        Text(_checkingServer ? 'Checking' : _serverOnline == true ? 'Online' : _serverOnline == false ? 'Offline' : 'Checking', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+                      ]),
+                    ),
+                  ),
+                  const SizedBox(width: 8),                  IconButton.filledTonal(
                     tooltip: 'Server settings',
                     onPressed: () => setState(() {
                       _editingServer = !_editingServer;
@@ -289,11 +365,42 @@ class _StudioPageState extends State<StudioPage> {
                     ]),
                   ),
                 ],
-                const SizedBox(height: 30),
-                const Text('Your next idea,\nbeautifully made.',
-                    style: TextStyle(fontSize: 35, height: 1.08, fontWeight: FontWeight.w700, letterSpacing: -1.7)),
-                const SizedBox(height: 10),
-                Text('A little imagination goes a long way.', style: TextStyle(color: ink.withValues(alpha: .62), fontSize: 15)),
+                const SizedBox(height: 22),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(20, 20, 18, 18),
+                  decoration: BoxDecoration(
+                    color: ink,
+                    borderRadius: BorderRadius.circular(26),
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF292522), Color(0xFF171514)],
+                    ),
+                  ),
+                  child: Stack(children: [
+                    Positioned(
+                      right: 8,
+                      top: 2,
+                      child: Icon(Icons.auto_awesome_rounded, size: 74, color: Colors.white.withValues(alpha: .07)),
+                    ),
+                    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.circle, size: 7, color: Color(0xFFE9A27E)),
+                        const SizedBox(width: 7),
+                        Text('YOUR CREATIVE STUDIO',
+                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.35,
+                                color: Colors.white.withValues(alpha: .72))),
+                      ]),
+                      const SizedBox(height: 18),
+                      const Text('Your next idea,\nbeautifully made.',
+                          style: TextStyle(fontSize: 31, height: 1.08, fontWeight: FontWeight.w700,
+                              letterSpacing: -1.25, color: Colors.white)),
+                      const SizedBox(height: 10),
+                      Text('Describe a scene. Make it yours.',
+                          style: TextStyle(color: Colors.white.withValues(alpha: .68), fontSize: 14)),
+                    ]),
+                  ]),
+                ),
                 const SizedBox(height: 25),
                 Row(children: [
                   _sectionLabel('QUICK PROMPTS'),
@@ -328,6 +435,47 @@ class _StudioPageState extends State<StudioPage> {
                     },
                   ),
                 ),
+                if (_history.isNotEmpty) ...[
+                  const SizedBox(height: 23),
+                  Row(children: [
+                    _sectionLabel('RECENT CREATIONS'),
+                    const Spacer(),
+                    Text('Tap to reuse', style: TextStyle(fontSize: 12, color: ink.withValues(alpha: .52))),
+                  ]),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 128,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _history.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 9),
+                      itemBuilder: (context, index) {
+                        final item = _history[index];
+                        return InkWell(
+                          onTap: _busy ? null : () => setState(() {
+                            _job = item;
+                            _prompt.text = item['prompt'] as String? ?? '';
+                            _ratio = item['aspect_ratio'] as String? ?? 'portrait';
+                            _steps = item['steps'] as int? ?? 30;
+                          }),
+                          borderRadius: BorderRadius.circular(16),
+                          child: Container(
+                            width: 116,
+                            padding: const EdgeInsets.all(7),
+                            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(11),
+                                child: Image.file(File(item['image_path'] as String), width: double.infinity, fit: BoxFit.cover))),
+                              const SizedBox(height: 6),
+                              Text(item['prompt'] as String? ?? 'Untitled image', maxLines: 1,
+                                overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                            ]),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 23),
                 _sectionLabel('DESCRIBE YOUR IMAGE'),
                 const SizedBox(height: 10),
@@ -415,7 +563,9 @@ class _StudioPageState extends State<StudioPage> {
                   const SizedBox(height: 12),
                   ClipRRect(
                     borderRadius: BorderRadius.circular(24),
-                    child: Image.network('$_api${job['image_url']}', fit: BoxFit.cover,
+                    child: Image(image: job['image_path'] is String
+                        ? FileImage(File(job['image_path'] as String))
+                        : NetworkImage('$_api${job['image_url']}'), fit: BoxFit.cover,
                       loadingBuilder: (context, child, loading) => loading == null ? child : Container(
                         height: 340,
                         color: const Color(0xFFE9E3DA),
@@ -524,3 +674,4 @@ class _TemplateCard extends StatelessWidget {
         ),
       );
 }
+
