@@ -17,7 +17,7 @@ class TemplateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-    color: Colors.white,
+    color: AppColors.surfaceCard,
     borderRadius: BorderRadius.circular(17),
     child: InkWell(
       onTap: onTap,
@@ -27,7 +27,7 @@ class TemplateCard extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(17),
-          border: Border.all(color: ink.withValues(alpha: .06)),
+          border: Border.all(color: AppColors.border),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -35,12 +35,12 @@ class TemplateCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(icon, size: 18, color: accent),
+                Icon(icon, size: 18, color: AppColors.accentLight),
                 const Spacer(),
-                Icon(
+                const Icon(
                   Icons.add_rounded,
                   size: 16,
-                  color: ink.withValues(alpha: .48),
+                  color: AppColors.textMuted,
                 ),
               ],
             ),
@@ -54,6 +54,7 @@ class TemplateCard extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -61,11 +62,11 @@ class TemplateCard extends StatelessWidget {
                   tag,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 9,
                     letterSpacing: .55,
                     fontWeight: FontWeight.w700,
-                    color: ink.withValues(alpha: .48),
+                    color: AppColors.textMuted,
                   ),
                 ),
               ],

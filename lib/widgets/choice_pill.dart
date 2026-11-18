@@ -17,19 +17,25 @@ class ChoicePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-    color: selected ? const Color(0xFFF0DFD8) : Colors.white,
+    color: selected ? AppColors.accent.withValues(alpha: 0.18) : AppColors.surfaceCard,
     borderRadius: BorderRadius.circular(15),
     child: InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(15),
-      child: Padding(
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(
+            color: selected ? AppColors.accent : AppColors.border,
+          ),
+        ),
         padding: const EdgeInsets.symmetric(vertical: 12),
         child: Column(
           children: [
             Icon(
               icon,
               size: 20,
-              color: selected ? accent : ink.withValues(alpha: .65),
+              color: selected ? AppColors.accent : AppColors.textSecondary,
             ),
             const SizedBox(height: 5),
             Text(
@@ -37,7 +43,7 @@ class ChoicePill extends StatelessWidget {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
-                color: selected ? accent : ink,
+                color: selected ? AppColors.accentLight : AppColors.textSecondary,
               ),
             ),
           ],

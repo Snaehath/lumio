@@ -4,13 +4,17 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'models/ai_model.dart';
+import 'models/generation_controller.dart';
 import 'screens/create_screen.dart';
+import 'screens/generate_screen.dart';
 import 'screens/image_detail_screen.dart';
 import 'screens/library_screen.dart';
+import 'screens/settings_screen.dart';
 import 'theme/app_theme.dart';
 
 const _buildApiUrl = String.fromEnvironment('API_BASE_URL');
@@ -39,15 +43,11 @@ class StudioPage extends StatefulWidget {
 class _StudioPageState extends State<StudioPage> {
   final _prompt = TextEditingController();
   final _serverController = TextEditingController();
-  String _ratio = 'portrait';
-  String _model = 'sana';
-  int _steps = 30;
-  String _api = _buildApiUrl.isEmpty ? 'http://10.0.2.2:8000' : _buildApiUrl;
-  Map<String, dynamic>? _job;
-  bool _busy = false;
-  bool _editingServer = false;
-  String? _error;
-  String _statusMessage = 'Starting the generator…';
+  final _genController = GenerationController();
+  String _ratio = '1:1';
+  String _model = 'moss';
+  int _steps = 8;
+  String _api = _buildApiUrl.isEmpty ? 'http://192.168.29.196:8000' : _buildApiUrl;
   bool? _serverOnline;
   bool? _comfyOnline;
   bool _checkingServer = false;
@@ -95,12 +95,14 @@ class _StudioPageState extends State<StudioPage> {
           final entries = (jsonDecode(models.body) as List)
               .cast<Map<String, dynamic>>();
           comfyOnline = entries.any(
-            (model) => model['id'] == 'moss' && model['available'] == true,
+            (model) =>
+                model['available'] == true &&
+                {'moss', 'fibo2', 'qwen_image'}.contains(model['id']),
           );
         }
       }
     } catch (_) {
-      // Keep API and ComfyUI status separate so a stopped ComfyUI is not reported as a dead API.
+      // Keep API and ComfyUI status separate.
     }
     if (mounted) {
       setState(() {
@@ -148,29 +150,36 @@ class _StudioPageState extends State<StudioPage> {
 
   void _reuseGeneration(Map<String, dynamic> job) {
     setState(() {
-      _selectedTab = 0;
       _prompt.text = job['prompt'] as String? ?? '';
-      _ratio = job['aspect_ratio'] as String? ?? 'portrait';
-      _model = job['model'] as String? ?? 'sana';
-      _steps = job['steps'] as int? ?? (_model == 'sana' ? 30 : 25);
-      _error = null;
-      _job = null;
+      _ratio = job['aspect_ratio'] as String? ?? '1:1';
+      _model = job['model'] as String? ?? 'moss';
+      _steps = job['steps'] as int? ?? AiModel.fromId(_model).defaultSteps;
     });
+    _genController.reset();
+    _openGenerateScreen();
   }
 
   Future<bool> _deleteGeneration(Map<String, dynamic> job) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete this image?'),
-        content: const Text('This removes the saved copy from this phone.'),
+        backgroundColor: AppColors.surfaceCard,
+        title: const Text(
+          'Delete this image?',
+          style: TextStyle(color: AppColors.textPrimary),
+        ),
+        content: const Text(
+          'This removes the saved copy from this phone.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFC93B2B)),
             child: const Text('Delete'),
           ),
         ],
@@ -186,10 +195,7 @@ class _StudioPageState extends State<StudioPage> {
       'generation_history',
       _history.map(jsonEncode).toList(),
     );
-    if (!mounted) return true;
-    setState(() {
-      if (_job?['id'] == job['id']) _job = null;
-    });
+    if (mounted) setState(() {});
     _snack('Image deleted');
     return true;
   }
@@ -199,17 +205,23 @@ class _StudioPageState extends State<StudioPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Clear recent images?'),
+        backgroundColor: AppColors.surfaceCard,
+        title: const Text(
+          'Clear recent images?',
+          style: TextStyle(color: AppColors.textPrimary),
+        ),
         content: const Text(
           'This removes saved images from this phone. It does not remove files from the generator PC.',
+          style: TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFC93B2B)),
             child: const Text('Clear history'),
           ),
         ],
@@ -227,10 +239,7 @@ class _StudioPageState extends State<StudioPage> {
     final preferences = await SharedPreferences.getInstance();
     await preferences.remove('generation_history');
     if (!mounted) return;
-    setState(() {
-      _history = [];
-      if (paths.contains(_job?['image_path'])) _job = null;
-    });
+    setState(() => _history = []);
     _snack('Recent images cleared');
   }
 
@@ -275,25 +284,37 @@ class _StudioPageState extends State<StudioPage> {
   void dispose() {
     _prompt.dispose();
     _serverController.dispose();
+    _genController.dispose();
     super.dispose();
+  }
+
+  String _mapApiRatio(String ratio) {
+    return switch (ratio) {
+      '1:1' || 'square' => 'square',
+      '9:16' || 'portrait' => 'portrait',
+      '16:9' || '3:2' || 'landscape' => 'landscape',
+      _ => 'square',
+    };
   }
 
   Future<void> _create() async {
     if (_prompt.text.trim().length < 3) {
-      setState(() => _error = 'Add a little more detail to your prompt.');
+      _genController.fail('Add a little more detail to your prompt.');
       return;
     }
-    setState(() {
-      _busy = true;
-      _error = null;
-      _job = null;
-      _statusMessage = _model == 'sana'
-          ? 'Sending your prompt…'
-          : _model == 'moss'
-          ? 'Starting MOSS in ComfyUI…'
-          : 'Starting FIBO 2.0 in ComfyUI…';
-    });
+
+    final initialMessage = _model == 'moss'
+        ? (_steps == 8 ? 'Starting MOSS (LoRA 8 steps)…' : 'Starting MOSS in ComfyUI…')
+        : _model == 'fibo2'
+        ? 'Starting FIBO 2.0 in ComfyUI…'
+        : _model == 'qwen_image'
+        ? 'Starting Qwen Image in ComfyUI…'
+        : 'Starting generator…';
+
+    _genController.start(initialMessage, _steps);
+
     try {
+      final apiRatio = _mapApiRatio(_ratio);
       final response = await http
           .post(
             Uri.parse('$_api/api/jobs'),
@@ -301,14 +322,16 @@ class _StudioPageState extends State<StudioPage> {
             body: jsonEncode({
               'prompt': _prompt.text.trim(),
               'model': _model,
-              'aspect_ratio': _ratio,
+              'aspect_ratio': apiRatio,
               'steps': _steps,
             }),
           )
           .timeout(const Duration(seconds: 90));
+
       if (response.statusCode != 202) {
         throw Exception(_detail(response.body));
       }
+
       var job = jsonDecode(response.body) as Map<String, dynamic>;
       if (job['status'] == 'queued' || job['status'] == 'running') {
         job = await _watchJob(job['id'] as String);
@@ -316,20 +339,16 @@ class _StudioPageState extends State<StudioPage> {
       if (job['status'] == 'failed') {
         throw Exception(job['error'] ?? 'Generation failed');
       }
+
+      _genController.updateProgress('Saving image to this phone…', _steps, _steps, job);
+      job = await _rememberGeneration(job);
+      _genController.complete(job);
       if (mounted) {
-        setState(() => _statusMessage = 'Saving the image to this phone…');
-      }
-      if (mounted) {
-        job = await _rememberGeneration(job);
-        setState(() => _job = job);
+        setState(() {});
         unawaited(_openImage(job));
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      _genController.fail(e.toString().replaceFirst('Exception: ', ''));
     }
   }
 
@@ -355,33 +374,47 @@ class _StudioPageState extends State<StudioPage> {
           if (!line.startsWith('data:')) continue;
           final job =
               jsonDecode(line.substring(5).trim()) as Map<String, dynamic>;
-          if (mounted) {
-            setState(() {
-              _job = job;
-              _statusMessage = job['status'] == 'queued'
-                  ? (job['model'] == 'sana'
-                        ? 'Waiting for the GPU…'
-                        : 'Waiting for ComfyUI…')
-                  : job['model'] == 'moss'
-                  ? 'MOSS is rendering in ComfyUI…'
-                  : job['model'] == 'fibo2'
-                  ? 'FIBO 2.0 is rendering in ComfyUI…'
-                  : 'Creating your image…';
-            });
-          }
+
+          final completedSteps = (job['completed_steps'] as num?)?.toInt() ?? 0;
+          final totalSteps = (job['steps'] as num?)?.toInt() ?? _steps;
+
+          final msg = job['status'] == 'queued'
+              ? 'Waiting for ComfyUI…'
+              : job['model'] == 'moss'
+              ? (totalSteps == 8
+                    ? 'MOSS LoRA rendering ($completedSteps/$totalSteps)…'
+                    : 'MOSS rendering ($completedSteps/$totalSteps)…')
+              : job['model'] == 'fibo2'
+              ? 'FIBO 2.0 rendering ($completedSteps/$totalSteps)…'
+              : job['model'] == 'qwen_image'
+              ? 'Qwen Image rendering ($completedSteps/$totalSteps)…'
+              : 'Creating your image ($completedSteps/$totalSteps)…';
+
+          _genController.updateProgress(msg, completedSteps, totalSteps, job);
+
           if (job['status'] == 'completed' || job['status'] == 'failed') {
             return job;
           }
         }
+
+        // Fallback check if SSE ended before status completed/failed
+        final check = await http.get(Uri.parse('$_api/api/jobs/$jobId'));
+        if (check.statusCode == 200) {
+          final j = jsonDecode(check.body) as Map<String, dynamic>;
+          if (j['status'] == 'completed' || j['status'] == 'failed') {
+            return j;
+          }
+        }
+
         throw const SocketException('Generation update stream ended early.');
       } catch (_) {
         if (attempt == 4) rethrow;
-        if (mounted) {
-          setState(
-            () => _statusMessage = 'Reconnecting to your image generator…',
-          );
-        }
-        await Future<void>.delayed(Duration(seconds: 2 << attempt));
+        _genController.updateProgress(
+          'Reconnecting…',
+          _genController.completedSteps,
+          _genController.totalSteps,
+        );
+        await Future<void>.delayed(Duration(seconds: 1 << attempt));
       } finally {
         client.close();
       }
@@ -415,111 +448,161 @@ class _StudioPageState extends State<StudioPage> {
 
   void _snack(String message) => ScaffoldMessenger.of(
     context,
-  ).showSnackBar(SnackBar(content: Text(message)));
+  ).showSnackBar(
+    SnackBar(
+      content: Text(message),
+      backgroundColor: AppColors.surfaceElevated,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+  );
 
-  Future<void> _saveServer() async {
-    final value = _serverController.text.trim().replaceFirst(RegExp(r'/$'), '');
-    final uri = Uri.tryParse(value);
-    if (uri == null ||
-        !{'http', 'https'}.contains(uri.scheme) ||
-        uri.host.isEmpty) {
-      setState(
-        () => _error =
-            'Enter a valid server address, such as http://192.168.1.20:8000',
-      );
-      return;
-    }
+  void _onModelChanged(String modelId) {
     setState(() {
-      _api = value;
-      _editingServer = false;
-      _error = null;
+      _model = modelId;
+      final aiModel = AiModel.fromId(modelId);
+      _steps = aiModel.defaultSteps;
     });
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString('api_base_url', value);
-    await _checkServerConnection();
+    _checkServerConnection();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final job = _job;
-    final completedSteps = job?['completed_steps'];
-    final completedStepCount = completedSteps is num
-        ? completedSteps.toInt()
-        : 0;
-    final totalSteps = (job?['steps'] as num?)?.toInt() ?? _steps;
-
-    return Scaffold(
-      body: SafeArea(
-        child: _selectedTab == 0
-            ? CreateScreen(
-                promptController: _prompt,
-                serverController: _serverController,
-                model: _model,
-                ratio: _ratio,
-                steps: _steps,
-                completedSteps: completedStepCount,
-                totalSteps: totalSteps,
-                statusMessage: _statusMessage,
-                busy: _busy,
-                editingServer: _editingServer,
-                checkingServer: _checkingServer,
-                serverOnline: _serverOnline,
-                comfyOnline: _comfyOnline,
-                error: _error,
-                onCheckServer: _checkServerConnection,
-                onToggleSettings: () => setState(() {
-                  _editingServer = !_editingServer;
-                  _serverController.text = _api;
-                }),
-                onSaveServer: _saveServer,
-                onCreate: _create,
-                onTemplateSelected: (template) => setState(() {
-                  _prompt.value = TextEditingValue(
-                    text: template.prompt,
-                    selection: TextSelection.collapsed(
-                      offset: template.prompt.length,
-                    ),
-                  );
-                  _ratio = template.ratio;
-                  _error = null;
-                }),
-                onModelChanged: (model) {
-                  setState(() {
-                    _model = model;
-                    _steps = model == 'sana' ? 30 : 25;
-                  });
-                  _checkServerConnection();
-                },
-                onRatioChanged: (ratio) => setState(() => _ratio = ratio),
-                onStepsChanged: (steps) => setState(() => _steps = steps),
-              )
-            : _buildLibrary(),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedTab,
-        onDestinationSelected: (index) => setState(() => _selectedTab = index),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.auto_awesome_rounded),
-            label: 'Create',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.photo_library_outlined),
-            label: 'Library',
-          ),
-        ],
+  void _openGenerateScreen() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => GenerateScreen(
+          promptController: _prompt,
+          modelId: _model,
+          ratio: _ratio,
+          steps: _steps,
+          generationController: _genController,
+          onModelChanged: _onModelChanged,
+          onRatioChanged: (newRatio) => setState(() => _ratio = newRatio),
+          onStepsChanged: (newSteps) => setState(() => _steps = newSteps),
+          onGenerate: _create,
+          onTemplateSelected: (template) {
+            _prompt.text = template.prompt;
+            setState(() => _ratio = template.ratio == 'portrait' ? '9:16' : template.ratio == 'landscape' ? '16:9' : '1:1');
+          },
+        ),
       ),
     );
   }
 
-  Widget _buildLibrary() => LibraryScreen(
-    images: _visibleHistory,
-    totalCount: _history.length,
-    filter: _libraryFilter,
-    api: _api,
-    onFilterChanged: (filter) => setState(() => _libraryFilter = filter),
-    onClearAll: _clearHistory,
-    onCreate: () => setState(() => _selectedTab = 0),
-    onOpenImage: _openImage,
-  );
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.scaffoldBackground,
+      body: SafeArea(
+        child: IndexedStack(
+          index: _selectedTab,
+          children: [
+            CreateScreen(
+              selectedModelId: _model,
+              checkingServer: _checkingServer,
+              serverOnline: _serverOnline,
+              comfyOnline: _comfyOnline,
+              onCheckServer: _checkServerConnection,
+              onModelChanged: _onModelChanged,
+              onStartCreate: _openGenerateScreen,
+            ),
+            LibraryScreen(
+              images: _visibleHistory,
+              allHistory: _history,
+              totalCount: _history.length,
+              filter: _libraryFilter,
+              api: _api,
+              onFilterChanged: (filter) => setState(() => _libraryFilter = filter),
+              onClearAll: _clearHistory,
+              onCreate: () => setState(() => _selectedTab = 0),
+              onOpenImage: _openImage,
+              onSaveImage: _save,
+            ),
+            SettingsScreen(
+              comfyOnline: _comfyOnline,
+              checkingServer: _checkingServer,
+              onCheckServer: _checkServerConnection,
+              onClearHistory: _clearHistory,
+              historyCount: _history.length,
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surface,
+          border: Border(
+            top: BorderSide(color: AppColors.border, width: 0.8),
+          ),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildNavItem(
+                  index: 0,
+                  icon: Icons.auto_awesome_rounded,
+                  label: 'Create',
+                ),
+                _buildNavItem(
+                  index: 1,
+                  icon: Icons.photo_library_outlined,
+                  label: 'Gallery',
+                ),
+                _buildNavItem(
+                  index: 2,
+                  icon: Icons.settings_outlined,
+                  label: 'Settings',
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavItem({
+    required int index,
+    required IconData icon,
+    required String label,
+  }) {
+    final selected = _selectedTab == index;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => setState(() => _selectedTab = index),
+        borderRadius: BorderRadius.circular(20),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFF281C13) : Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 22,
+                color: selected ? AppColors.accent : AppColors.textMuted,
+              ),
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? AppColors.accentLight : AppColors.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

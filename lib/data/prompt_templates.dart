@@ -34,4 +34,20 @@ const promptTemplates = [
     prompt:
         'A weathered medieval knight with a broad sword standing on a windswept ridge, dramatic clouds, engraved steel, grounded fantasy concept art, precise armor details, cinematic natural light.',
   ),
+  PromptTemplate(
+    title: 'Coral reef observatory',
+    tag: 'UNDERWATER WORLD',
+    icon: Icons.scuba_diving_rounded,
+    ratio: 'landscape',
+    prompt:
+        'A glass underwater research station nestled in a thriving coral reef, tiny divers observing a manta ray beyond the window, sunbeams scattering through turquoise water, bioluminescent plankton, detailed environmental concept art, rich natural colors.',
+  ),
+  PromptTemplate(
+    title: 'Paper moon bakery',
+    tag: 'WHIMSICAL STILL LIFE',
+    icon: Icons.bakery_dining_rounded,
+    ratio: 'square',
+    prompt:
+        'A tiny midnight bakery built inside a crescent moon, a sleepy fox baker arranging star-shaped pastries, warm oven glow against a deep indigo sky, delicate cut-paper illustration, tactile layered paper textures, charming storybook composition.',
+  ),
 ];
